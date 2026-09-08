@@ -516,11 +516,30 @@ def init_redis_cluster(redis_kwargs) -> redis.RedisCluster:
     return redis.RedisCluster(startup_nodes=new_startup_nodes, **cluster_kwargs)
 
 
+# Under Sentinel the address is whatever the monitors report, never what the
+# config carries, so a configured host/port is not the thing to connect to.
+# Passing them through is not merely redundant: redis-py builds each monitor with
+# `Redis(hostname, port, **sentinel_kwargs)`, so a `host` key here arrives twice
+# and raises "Redis.__init__() got multiple values for argument 'host'". The same
+# dict reaches `master_for()`, which would then be handed the very address it
+# exists to discover.
+#
+# This matters because a caller cannot simply omit the host: litellm's Router
+# only builds a Redis cache at all when redis_url or redis_host+redis_port are
+# set (router.py), so the host is always present by the time Sentinel is reached.
+_SENTINEL_IGNORED_CONNECTION_ARGS: Final = frozenset({"host", "port"})
+
+
 def _get_redis_sentinel_connection_kwargs(redis_kwargs: dict) -> dict:
+    """Connection settings shared by the monitors and by the discovered master.
+
+    Everything `redis.Redis` accepts is passed through except the address itself
+    -- see `_SENTINEL_IGNORED_CONNECTION_ARGS`.
+    """
     connection_kwargs: Final = {}
     args: Final = _get_redis_kwargs()
     for arg in redis_kwargs:
-        if arg in args:
+        if arg in args and arg not in _SENTINEL_IGNORED_CONNECTION_ARGS:
             connection_kwargs[arg] = redis_kwargs[arg]
 
     return connection_kwargs
