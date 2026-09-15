@@ -1,10 +1,12 @@
 # syntax=docker/dockerfile:1.7
 
 # Base image for building
-ARG LITELLM_BUILD_IMAGE=cgr.dev/chainguard/wolfi-base@sha256:a31344ab2cb8618db84f535eec56f76f6178b142cb92cb2e48676cc2dcebea72
+# Bumped 2026-09-15: Wolfi's python-3.13 package (3.13.15_git20260912) needs glibc 2.44, the old
+# digest a31344ab… ships glibc 2.43, so `import math` failed and uv silently fell back to CPython 3.14.
+ARG LITELLM_BUILD_IMAGE=cgr.dev/chainguard/wolfi-base@sha256:9a8d954d8f03a21bcf2be73d4628f0ad26d35c3275469925de63a34eebd58f13
 
-# Runtime image
-ARG LITELLM_RUNTIME_IMAGE=cgr.dev/chainguard/wolfi-base@sha256:a31344ab2cb8618db84f535eec56f76f6178b142cb92cb2e48676cc2dcebea72
+# Runtime image (must match the build image's glibc: the runtime installs the same python3 package)
+ARG LITELLM_RUNTIME_IMAGE=cgr.dev/chainguard/wolfi-base@sha256:9a8d954d8f03a21bcf2be73d4628f0ad26d35c3275469925de63a34eebd58f13
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.11.7@sha256:240fb85ab0f263ef12f492d8476aa3a2e4e1e333f7d67fbdd923d00a506a516a
 # Pinned by digest like the other base images; bump explicitly on Node upgrades.
 ARG UI_BUILD_IMAGE=node:24.19-alpine3.24@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43
@@ -49,8 +51,11 @@ RUN apk add --no-cache \
     npm \
     libsndfile
 
+# UV_PYTHON_DOWNLOADS=never: if the system python3 is unusable, fail here instead of building a
+# .venv on a downloaded interpreter that the runtime stage does not have.
 ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
     UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
     PATH="/app/.venv/bin:${PATH}"
 
 # Copy dependency metadata first for layer caching
