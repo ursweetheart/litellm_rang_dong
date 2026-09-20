@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 import traceback
+import uuid  # RANG DONG PATCH -- _REJECTED_STREAM_LOGGING_FALLBACK
 import warnings
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, MutableMapping, Sequence
 from datetime import datetime, timedelta, timezone
@@ -10152,11 +10153,35 @@ async def chat_completion(
 
         if data.get("stream", None) is not None and data["stream"] is True:
             _iterator = litellm.utils.ModelResponseIterator(model_response=_chat_response, convert_to_delta=True)
+            # RANG DONG PATCH -- _REJECTED_STREAM_LOGGING_FALLBACK
+            #
+            # `litellm_logging_obj` CO MAT trong request data nhung gia tri con la
+            # None khi loi duoc nem tu `async_pre_call_hook` (do 20/09/2026). Truyen
+            # thang xuong CustomStreamWrapper thi no vo ngay o __init__:
+            #     AttributeError: 'NoneType' object has no attribute
+            #     'model_call_details'     (streaming_handler.py:206)
+            # tuc la MOI request `stream=True` bi mot hook tu choi deu tra HTTP 500
+            # thay vi cau tra loi da soan san. Nhanh khong-luong thi dung.
+            #
+            # Dung mot Logging that chu khong phai object gia: wrapper con dung
+            # logging_obj o hon chuc cho khac (call_type, success handler, caching),
+            # nen mot object toi gian se vo o cho khac va kho lan hon.
+            _rejected_logging_obj = _data.get("litellm_logging_obj", None)
+            if _rejected_logging_obj is None:
+                _rejected_logging_obj = LiteLLMLoggingObj(
+                    model=data.get("model", ""),
+                    messages=_data.get("messages", []),
+                    stream=True,
+                    call_type="acompletion",
+                    start_time=datetime.now(),
+                    litellm_call_id=_data.get("litellm_call_id", "") or str(uuid.uuid4()),
+                    function_id="",
+                )
             _streaming_response = litellm.CustomStreamWrapper(
                 completion_stream=_iterator,
                 model=data.get("model", ""),
                 custom_llm_provider="cached_response",
-                logging_obj=_data.get("litellm_logging_obj", None),
+                logging_obj=_rejected_logging_obj,
             )
             selected_data_generator = select_data_generator(
                 response=_streaming_response,
@@ -10165,10 +10190,21 @@ async def chat_completion(
                 request=request,
             )
 
+            # RANG DONG PATCH -- _REJECTED_STREAM_LOGGING_FALLBACK (phan 2)
+            #
+            # NHAT QUAN VOI NHANH KHONG-LUONG. Ngay duoi day, cung mot loi va cung
+            # mot cau tra loi da soan san duoc tra bang `return _chat_response`,
+            # tuc HTTP 200. Nhanh luong thi lay `e.status_code` = 400
+            # (exceptions.py:555) -- nen CUNG MOT su kien cho hai ma HTTP khac nhau
+            # chi vi client co bat `stream` hay khong.
+            #
+            # Client nhan 400 phan lon se coi la loi va khong doc than, nen cau tra
+            # loi da soan san khong bao gio den duoc nguoi dung. Dat 200 o day
+            # KHONG tao ra hanh vi nao ma nhanh khong-luong chua co.
             return StreamingResponse(
                 selected_data_generator,
                 media_type="text/event-stream",
-                status_code=(e.status_code if hasattr(e, "status_code") else status.HTTP_400_BAD_REQUEST),
+                status_code=status.HTTP_200_OK,
             )
         _usage: Final = litellm.Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0)
         _chat_response.usage = _usage
